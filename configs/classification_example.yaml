@@ -1,0 +1,71 @@
+# Example configuration for a classification task with missing modalities
+
+# General settings
+name: multimodal_classification
+seed: 42
+output_dir: ./output/multimodal_classification
+
+# Dataset settings
+data:
+  modalities: ['image', 'text', 'audio']
+  train_data: 
+    path: /path/to/train/data
+    batch_size: 32
+    num_workers: 4
+  val_data:
+    path: /path/to/val/data
+    batch_size: 32
+    num_workers: 4
+  test_data:
+    path: /path/to/test/data
+    batch_size: 32
+    num_workers: 4
+  missing_modalities:
+    enabled: true
+    train_missing_prob: 0.0  # No missing modalities during training
+    test_missing: ['image', 'text', 'audio']  # Test with each modality missing
+
+# Model settings
+model:
+  type: classification
+  num_classes: 10
+  fusion_type: attention  # Options: early, late, attention
+  modality_dimensions:
+    image: 2048
+    text: 768
+    audio: 512
+  fusion_dimension: 512
+  dropout: 0.2
+  pretrained: true
+  handling_missing:
+    strategy: zero  # Options: zero, mean, learned
+
+# Training settings
+training:
+  epochs: 100
+  criterion: cross_entropy  # Options: cross_entropy, bce, focal
+  optimizer:
+    name: adam
+    lr: 0.001
+    weight_decay: 0.0001
+  scheduler:
+    name: cosine
+    warmup_epochs: 5
+    min_lr: 0.00001
+  early_stopping:
+    enabled: true
+    patience: 10
+    monitor: val_loss
+  save_interval: 5
+  log_interval: 10
+
+# Distributed training
+distributed:
+  enabled: true
+  backend: nccl
+  find_unused_parameters: true
+
+# TensorBoard settings
+tensorboard:
+  enabled: true
+  log_dir: ./output/multimodal_classification/tensorboard

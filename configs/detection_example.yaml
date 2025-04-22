@@ -1,0 +1,80 @@
+# Example configuration for an object detection task with missing modalities
+
+# General settings
+name: multimodal_detection
+seed: 42
+output_dir: ./output/multimodal_detection
+
+# Dataset settings
+data:
+  modalities: ['rgb', 'depth', 'thermal']
+  train_data: 
+    path: /path/to/train/data
+    batch_size: 16
+    num_workers: 4
+  val_data:
+    path: /path/to/val/data
+    batch_size: 16
+    num_workers: 4
+  test_data:
+    path: /path/to/test/data
+    batch_size: 16
+    num_workers: 4
+  missing_modalities:
+    enabled: true
+    train_missing_prob: 0.0  # No missing modalities during training
+    test_missing: ['rgb', 'depth', 'thermal']  # Test with each modality missing
+
+# Model settings
+model:
+  type: detection
+  backbone: resnet50
+  num_classes: 80  # COCO classes
+  fusion_type: attention  # Options: early, late, attention
+  modality_dimensions:
+    rgb: 2048
+    depth: 1024
+    thermal: 1024
+  fusion_dimension: 1024
+  dropout: 0.1
+  pretrained: true
+  handling_missing:
+    strategy: learned  # Options: zero, mean, learned
+  detection:
+    architecture: faster_rcnn  # Options: faster_rcnn, retinanet, yolo
+    anchor_sizes: [32, 64, 128, 256, 512]
+    aspect_ratios: [0.5, 1.0, 2.0]
+
+# Training settings
+training:
+  epochs: 50
+  criterion: detection  # Uses model's built-in detection loss
+  optimizer:
+    name: adamw
+    lr: 0.0001
+    weight_decay: 0.0001
+  scheduler:
+    name: step
+    step_size: 15
+    gamma: 0.1
+  early_stopping:
+    enabled: true
+    patience: 5
+    monitor: val_loss
+  save_interval: 5
+  log_interval: 50
+  eval_settings:
+    iou_threshold: 0.5
+    score_threshold: 0.05
+
+# Distributed training
+distributed:
+  enabled: true
+  backend: nccl
+  find_unused_parameters: true
+
+# TensorBoard settings
+tensorboard:
+  enabled: true
+  log_dir: ./output/multimodal_detection/tensorboard
+  visualize_detections: true
