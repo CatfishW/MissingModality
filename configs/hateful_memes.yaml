@@ -1,0 +1,86 @@
+# Configuration for Hateful Memes Classification
+
+# General settings
+name: hateful_memes_classification
+seed: 42
+output_dir: ./output/hateful_memes
+
+# Dataset settings
+data:
+  modalities: ['image', 'text']
+  data_path: /path/to/hateful_memes  # Update this to your dataset path
+  train_data: 
+    batch_size: 32
+    num_workers: 4
+  val_data:
+    batch_size: 32
+    num_workers: 4
+  test_data:
+    batch_size: 32
+    num_workers: 4
+  missing_modalities:
+    enabled: true
+    train_missing_prob: 0.0  # No missing modalities during training
+    test_missing: ['image', 'text']  # Test with each modality missing
+
+# Image transformation settings
+image_transforms:
+  train:
+    image_size: 224
+    normalize: true
+  val:
+    image_size: 224
+    normalize: true
+  test:
+    image_size: 224
+    normalize: true
+
+# Text transformation settings
+text_transforms:
+  model_name: "bert-base-uncased"
+  max_length: 128
+
+# Model settings
+model:
+  type: "hateful_memes"
+  num_classes: 2  # Binary classification (hateful or not)
+  image_encoder: "resnet50"
+  text_encoder: "bert-base-uncased"
+  fusion_type: "attention"  # Options: early, late, attention
+  fusion_dim: 512
+  dropout: 0.3
+  pretrained: true
+  handling_missing:
+    strategy: "learned"  # Options: zero, mean, learned
+
+# Training settings
+training:
+  epochs: 30
+  criterion: "cross_entropy"  # Options: cross_entropy, bce, focal
+  optimizer:
+    name: "adamw"
+    lr: 0.0001
+    weight_decay: 0.01
+  scheduler:
+    name: "cosine"
+    warmup_epochs: 3
+    min_lr: 0.000001
+  early_stopping:
+    enabled: true
+    patience: 5
+    monitor: "val_loss"
+  save_interval: 1
+  log_interval: 10
+  evaluation:
+    metrics: ["accuracy", "precision", "recall", "f1"]
+
+# Distributed training
+distributed:
+  enabled: false  # Enable only if you have multiple GPUs
+  backend: "nccl"
+  find_unused_parameters: true
+
+# TensorBoard settings
+tensorboard:
+  enabled: true
+  log_dir: "./output/hateful_memes/tensorboard"

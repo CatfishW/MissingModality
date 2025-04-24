@@ -73,7 +73,19 @@ def build_model(config):
     model_cfg = config.get('model', {})
     model_type = model_cfg.get('type', 'classification')
     
-    if model_type == 'classification':
+    if model_type == 'hateful_memes':
+        from models.classification_model import HatefulMemesClassifier
+        model = HatefulMemesClassifier(
+            num_classes=model_cfg.get('num_classes', 2),
+            image_encoder=model_cfg.get('image_encoder', 'resnet50'),
+            text_encoder=model_cfg.get('text_encoder', 'bert-base-uncased'),
+            fusion_type=model_cfg.get('fusion_type', 'attention'),
+            fusion_dim=model_cfg.get('fusion_dim', 512),
+            dropout=model_cfg.get('dropout', 0.2),
+            pretrained=False,  # Don't need pretrained for testing
+            handling_missing=model_cfg.get('handling_missing', {'strategy': 'zero'})
+        )
+    elif model_type == 'classification':
         from models.classification_model import MultiModalClassifier
         model = MultiModalClassifier(
             modalities=config['data']['modalities'],
@@ -129,17 +141,51 @@ def prepare_test_dataset(config, missing_modalities=None):
     """
     data_cfg = config.get('data', {})
     modalities = data_cfg.get('modalities', [])
+    model_type = config.get('model', {}).get('type', 'classification')
     
-    # Import your dataset classes
-    from data.datasets.your_dataset import YourMultiModalDataset
-    
-    # Create test dataset
-    test_data_cfg = data_cfg.get('test_data', {})
-    test_dataset = YourMultiModalDataset(
-        data_path=test_data_cfg.get('path', './data'),
-        modalities=modalities,
-        split='test'
-    )
+    if model_type == 'hateful_memes':
+        # Import hateful memes dataset and transforms
+        from data.datasets.hateful_memes import HatefulMemesDataset
+        from data.transforms.hateful_memes_transforms import HatefulMemesTransforms
+        
+        # Get data path
+        data_path = data_cfg.get('data_path', './data')
+        
+        # Set up transformations
+        image_transform_cfg = config.get('image_transforms', {})
+        text_transform_cfg = config.get('text_transforms', {})
+        
+        # Image transforms for testing
+        test_image_transform = HatefulMemesTransforms.get_image_transform(
+            split='test',
+            image_size=image_transform_cfg.get('test', {}).get('image_size', 224),
+            normalize=image_transform_cfg.get('test', {}).get('normalize', True)
+        )
+        
+        # Text transforms
+        text_transform = HatefulMemesTransforms.get_text_transform(
+            model_name=text_transform_cfg.get('model_name', 'bert-base-uncased'),
+            max_length=text_transform_cfg.get('max_length', 128)
+        )
+        
+        # Create test dataset
+        test_dataset = HatefulMemesDataset(
+            data_path=data_path,
+            split='test',
+            transform=test_image_transform,
+            text_transform=text_transform
+        )
+    else:
+        # Original dataset loading code
+        from data.datasets.your_dataset import YourMultiModalDataset
+        
+        # Create test dataset
+        test_data_cfg = data_cfg.get('test_data', {})
+        test_dataset = YourMultiModalDataset(
+            data_path=test_data_cfg.get('path', './data'),
+            modalities=modalities,
+            split='test'
+        )
     
     # Wrap with MissingModalityDataset to simulate missing modalities
     if missing_modalities:

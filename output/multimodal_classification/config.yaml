@@ -1,0 +1,64 @@
+data:
+  missing_modalities:
+    enabled: true
+    test_missing:
+    - image
+    - text
+    - audio
+    train_missing_prob: 0.0
+  modalities:
+  - image
+  - text
+  - audio
+  test_data:
+    batch_size: 32
+    num_workers: 4
+    path: /path/to/test/data
+  train_data:
+    batch_size: 32
+    num_workers: 4
+    path: /path/to/train/data
+  val_data:
+    batch_size: 32
+    num_workers: 4
+    path: /path/to/val/data
+distributed:
+  backend: nccl
+  enabled: true
+  find_unused_parameters: true
+model:
+  dropout: 0.2
+  fusion_dimension: 512
+  fusion_type: attention
+  handling_missing:
+    strategy: zero
+  modality_dimensions:
+    audio: 512
+    image: 2048
+    text: 768
+  num_classes: 10
+  pretrained: true
+  type: classification
+name: multimodal_classification
+output_dir: ./output/multimodal_classification
+seed: 42
+tensorboard:
+  enabled: true
+  log_dir: ./output/multimodal_classification/tensorboard
+training:
+  criterion: cross_entropy
+  early_stopping:
+    enabled: true
+    monitor: val_loss
+    patience: 10
+  epochs: 100
+  log_interval: 10
+  optimizer:
+    lr: 0.001
+    name: adam
+    weight_decay: 0.0001
+  save_interval: 5
+  scheduler:
+    min_lr: 1.0e-05
+    name: cosine
+    warmup_epochs: 5

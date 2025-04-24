@@ -1,0 +1,77 @@
+data:
+  data_path: /path/to/hateful_memes
+  missing_modalities:
+    enabled: true
+    test_missing:
+    - image
+    - text
+    train_missing_prob: 0.0
+  modalities:
+  - image
+  - text
+  test_data:
+    batch_size: 32
+    num_workers: 4
+  train_data:
+    batch_size: 32
+    num_workers: 4
+  val_data:
+    batch_size: 32
+    num_workers: 4
+distributed:
+  backend: nccl
+  enabled: false
+  find_unused_parameters: true
+image_transforms:
+  test:
+    image_size: 224
+    normalize: true
+  train:
+    image_size: 224
+    normalize: true
+  val:
+    image_size: 224
+    normalize: true
+model:
+  dropout: 0.3
+  fusion_dim: 512
+  fusion_type: attention
+  handling_missing:
+    strategy: learned
+  image_encoder: resnet50
+  num_classes: 2
+  pretrained: true
+  text_encoder: bert-base-uncased
+  type: hateful_memes
+name: hateful_memes_classification
+output_dir: ./output/hateful_memes
+seed: 42
+tensorboard:
+  enabled: true
+  log_dir: ./output/hateful_memes/tensorboard
+text_transforms:
+  max_length: 128
+  model_name: bert-base-uncased
+training:
+  criterion: cross_entropy
+  early_stopping:
+    enabled: true
+    monitor: val_loss
+    patience: 5
+  epochs: 30
+  evaluation:
+    metrics:
+    - accuracy
+    - precision
+    - recall
+    - f1
+  log_interval: 10
+  optimizer:
+    lr: 0.0001
+    name: adamw
+    weight_decay: 0.01
+  save_interval: 1
+  scheduler:
+    min_lr: 1.0e-06
+    name: cosine
+    warmup_epochs: 3

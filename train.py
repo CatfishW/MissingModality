@@ -10,7 +10,7 @@ from utils.config import Config
 from utils.distributed import setup_distributed, set_seed
 from trainers.task_trainers import ClassificationTrainer, RegressionTrainer, DetectionTrainer
 
-
+#python train.py --config configs/hateful_memes.yaml
 def parse_args():
     parser = argparse.ArgumentParser(description='MissingModality Training')
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
@@ -31,9 +31,22 @@ def build_model(config):
         Model instance
     """
     model_cfg = config.get('model', {})
-    model_type = model_cfg.get('type', 'classification')
+    model_type = model_cfg.get('type', 'hateful_memes')
+    print(f"Building model of type: {model_type}")
     
-    if model_type == 'classification':
+    if model_type == 'hateful_memes':
+        from models.classification_model import HatefulMemesClassifier
+        model = HatefulMemesClassifier(
+            num_classes=model_cfg.get('num_classes', 2),
+            image_encoder=model_cfg.get('image_encoder', 'resnet50'),
+            text_encoder=model_cfg.get('text_encoder', 'bert-base-uncased'),
+            fusion_type=model_cfg.get('fusion_type', 'attention'),
+            fusion_dim=model_cfg.get('fusion_dim', 512),
+            dropout=model_cfg.get('dropout', 0.2),
+            pretrained=model_cfg.get('pretrained', True),
+            handling_missing=model_cfg.get('handling_missing', {'strategy': 'zero'})
+        )
+    elif model_type == 'classification':
         from models.classification_model import MultiModalClassifier  # Import your model implementation
         model = MultiModalClassifier(
             modalities=config['data']['modalities'],
@@ -88,35 +101,100 @@ def build_datasets(config):
     """
     data_cfg = config.get('data', {})
     modalities = data_cfg.get('modalities', [])
+    model_type = config.get('model', {}).get('type', 'classification')
     
-    # Import appropriate dataset classes
-    # You need to implement these dataset classes specific to your data
-    from data.datasets.your_dataset import YourMultiModalDataset
+    # Import dataset and missing modality handling
     from data.datasets.base import MissingModalityDataset
     
-    # Create train dataset
-    train_data_cfg = data_cfg.get('train_data', {})
-    train_dataset = YourMultiModalDataset(
-        data_path=train_data_cfg.get('path', './data'),
-        modalities=modalities,
-        split='train'
-    )
-    
-    # Create validation dataset
-    val_data_cfg = data_cfg.get('val_data', {})
-    val_dataset = YourMultiModalDataset(
-        data_path=val_data_cfg.get('path', './data'),
-        modalities=modalities,
-        split='val'
-    )
-    
-    # Create test dataset
-    test_data_cfg = data_cfg.get('test_data', {})
-    test_dataset = YourMultiModalDataset(
-        data_path=test_data_cfg.get('path', './data'),
-        modalities=modalities,
-        split='test'
-    )
+    if model_type == 'hateful_memes':
+        # Import hateful memes dataset and transforms
+        from data.datasets.hateful_memes import HatefulMemesDataset
+        from data.transforms.hateful_memes_transforms import HatefulMemesTransforms
+        
+        # Get data path
+        data_path = data_cfg.get('data_path', './data')
+        
+        # Set up transformations
+        image_transform_cfg = config.get('image_transforms', {})
+        text_transform_cfg = config.get('text_transforms', {})
+        
+        # Image transforms
+        train_image_transform = HatefulMemesTransforms.get_image_transform(
+            split='train',
+            image_size=image_transform_cfg.get('train', {}).get('image_size', 224),
+            normalize=image_transform_cfg.get('train', {}).get('normalize', True)
+        )
+        
+        val_image_transform = HatefulMemesTransforms.get_image_transform(
+            split='val',
+            image_size=image_transform_cfg.get('val', {}).get('image_size', 224),
+            normalize=image_transform_cfg.get('val', {}).get('normalize', True)
+        )
+        
+        test_image_transform = HatefulMemesTransforms.get_image_transform(
+            split='test',
+            image_size=image_transform_cfg.get('test', {}).get('image_size', 224),
+            normalize=image_transform_cfg.get('test', {}).get('normalize', True)
+        )
+        
+        # Text transforms
+        text_transform = HatefulMemesTransforms.get_text_transform(
+            model_name=text_transform_cfg.get('model_name', 'bert-base-uncased'),
+            max_length=text_transform_cfg.get('max_length', 128)
+        )
+        
+        # Create datasets
+        train_dataset = HatefulMemesDataset(
+            data_path=data_path,
+            split='train',
+            transform=train_image_transform,
+            text_transform=text_transform
+        )
+        
+        val_dataset = HatefulMemesDataset(
+            data_path=data_path,
+            split='val',
+            transform=val_image_transform,
+            text_transform=text_transform
+        )
+        
+        test_dataset = HatefulMemesDataset(
+            data_path=data_path,
+            split='test',
+            transform=test_image_transform,
+            text_transform=text_transform
+        )
+    else:
+        # Original dataset loading code
+        # Import appropriate dataset classes
+        try:
+            from data.datasets.your_dataset import YourMultiModalDataset
+        except ImportError:
+            raise ImportError("You need to implement YourMultiModalDataset for your specific data")
+        
+        # Create train dataset
+        train_data_cfg = data_cfg.get('train_data', {})
+        train_dataset = YourMultiModalDataset(
+            data_path=train_data_cfg.get('path', './data'),
+            modalities=modalities,
+            split='train'
+        )
+        
+        # Create validation dataset
+        val_data_cfg = data_cfg.get('val_data', {})
+        val_dataset = YourMultiModalDataset(
+            data_path=val_data_cfg.get('path', './data'),
+            modalities=modalities,
+            split='val'
+        )
+        
+        # Create test dataset
+        test_data_cfg = data_cfg.get('test_data', {})
+        test_dataset = YourMultiModalDataset(
+            data_path=test_data_cfg.get('path', './data'),
+            modalities=modalities,
+            split='test'
+        )
     
     # Wrap with MissingModalityDataset if enabled
     missing_cfg = data_cfg.get('missing_modalities', {})
