@@ -7,7 +7,7 @@ output_dir: ./output/hateful_memes
 
 # Resume training settings
 resume:
-  enabled: false
+  enabled: true
   checkpoint_path: "./output/hateful_memes/best_model.pth"  # Path to saved checkpoint
   strict: true  # Whether to strictly enforce that the keys match between state_dict and model
   reset_optimizer: false  # Whether to reset the optimizer
@@ -96,10 +96,3 @@ distributed:
 tensorboard:
   enabled: true
   log_dir: "./output/hateful_memes/tensorboard"
-
-# Visualization settings
-visualization:
-  enabled: true
-  interval: 50  # Visualize every 50 batches
-  num_samples: 4  # Number of samples to visualize per batch
-  class_names: ["Not Hateful", "Hateful"]  # Class names for visualization

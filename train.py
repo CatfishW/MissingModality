@@ -102,17 +102,14 @@ def build_datasets(config):
     data_cfg = config.get('data', {})
     modalities = data_cfg.get('modalities', [])
     model_type = config.get('model', {}).get('type', 'classification')
+    dataset_source = data_cfg.get('dataset_source', 'local')  # 'local' or 'huggingface'
     
     # Import dataset and missing modality handling
     from data.datasets.base import MissingModalityDataset
     
     if model_type == 'hateful_memes':
         # Import hateful memes dataset and transforms
-        from data.datasets.hateful_memes import HatefulMemesDataset
         from data.transforms.hateful_memes_transforms import HatefulMemesTransforms
-        
-        # Get data path
-        data_path = data_cfg.get('data_path', './data')
         
         # Set up transformations
         image_transform_cfg = config.get('image_transforms', {})
@@ -143,27 +140,73 @@ def build_datasets(config):
             max_length=text_transform_cfg.get('max_length', 128)
         )
         
-        # Create datasets
-        train_dataset = HatefulMemesDataset(
-            data_path=data_path,
-            split='train',
-            transform=train_image_transform,
-            text_transform=text_transform
-        )
-        
-        val_dataset = HatefulMemesDataset(
-            data_path=data_path,
-            split='val',
-            transform=val_image_transform,
-            text_transform=text_transform
-        )
-        
-        test_dataset = HatefulMemesDataset(
-            data_path=data_path,
-            split='test',
-            transform=test_image_transform,
-            text_transform=text_transform
-        )
+        # Create datasets based on source
+        if dataset_source == 'huggingface':
+            # Use Hugging Face dataset
+            from data.datasets.huggingface_hateful_memes import HuggingFaceHatefulMemesDataset
+            
+            dataset_name = data_cfg.get('dataset_name', 'neuralcatcher/hateful_memes')
+            cache_dir = data_cfg.get('cache_dir', None)
+            data_dir = data_cfg.get('data_path', './data')
+            
+            print(f"Loading Hateful Memes dataset from Hugging Face: {dataset_name}")
+            print(f"Using data directory for images: {data_dir}")
+            
+            train_dataset = HuggingFaceHatefulMemesDataset(
+                split='train',
+                transform=train_image_transform,
+                text_transform=text_transform,
+                dataset_name=dataset_name,
+                cache_dir=cache_dir,
+                data_dir=data_dir
+            )
+            
+            val_dataset = HuggingFaceHatefulMemesDataset(
+                split='val',
+                transform=val_image_transform,
+                text_transform=text_transform,
+                dataset_name=dataset_name,
+                cache_dir=cache_dir,
+                data_dir=data_dir
+            )
+            
+            test_dataset = HuggingFaceHatefulMemesDataset(
+                split='test',
+                transform=test_image_transform,
+                text_transform=text_transform,
+                dataset_name=dataset_name,
+                cache_dir=cache_dir,
+                data_dir=data_dir
+            )
+        else:
+            # Use local dataset
+            from data.datasets.hateful_memes import HatefulMemesDataset
+            
+            # Get data path
+            data_path = data_cfg.get('data_path', './data')
+            
+            print(f"Loading Hateful Memes dataset from local path: {data_path}")
+            
+            train_dataset = HatefulMemesDataset(
+                data_path=data_path,
+                split='train',
+                transform=train_image_transform,
+                text_transform=text_transform
+            )
+            
+            val_dataset = HatefulMemesDataset(
+                data_path=data_path,
+                split='val',
+                transform=val_image_transform,
+                text_transform=text_transform
+            )
+            
+            test_dataset = HatefulMemesDataset(
+                data_path=data_path,
+                split='test',
+                transform=test_image_transform,
+                text_transform=text_transform
+            )
     else:
         # Original dataset loading code
         # Import appropriate dataset classes
@@ -303,6 +346,14 @@ def build_criterion(config):
     elif model_type == 'detection':
         # For detection, typically the model handles the loss calculation internally
         return lambda x, y: sum(loss for loss in x['losses'].values())
+    elif model_type == "hateful_memes":
+        if criterion_name == 'cross_entropy':
+            return nn.CrossEntropyLoss()
+        elif criterion_name == 'bce':
+            return nn.BCEWithLogitsLoss()
+        elif criterion_name == 'focal':
+            from utils.losses import FocalLoss
+            return FocalLoss(alpha=0.25, gamma=2.0)
     
     raise ValueError(f"Unsupported criterion: {criterion_name} for model type: {model_type}")
 
@@ -405,7 +456,7 @@ def build_trainer(config, model, train_loader, val_loader, criterion, optimizer,
     model_type = model_cfg.get('type', 'classification')
     output_dir = config.get('output_dir', './output')
     
-    if model_type == 'classification':
+    if model_type == 'classification' or model_type == 'hateful_memes':
         return ClassificationTrainer(
             num_classes=model_cfg.get('num_classes', 2),
             model=model,
@@ -469,7 +520,10 @@ def main_worker(rank, world_size, args, config):
         setup_distributed(backend='nccl')
     
     # Set the device
-    device = torch.device(f'cuda:{rank}' if torch.cuda.is_available() else 'cpu')
+    if rank == 0 or args.local_rank == -1:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        device = torch.device(f'cuda:{rank}' if torch.cuda.is_available() else 'cpu')
     
     # Set random seed for reproducibility
     set_seed(config.get('seed', 42) + rank)
@@ -496,9 +550,20 @@ def main_worker(rank, world_size, args, config):
         device, distributed=(args.local_rank != -1)
     )
     
-    # Resume from checkpoint if specified
-    if args.resume:
-        trainer.load_checkpoint(args.resume)
+    # Resume from checkpoint if specified in args or config
+    resume_config = config.get('resume', {})
+    resume_enabled = resume_config.get('enabled', False)
+    checkpoint_path = args.resume or (resume_enabled and resume_config.get('checkpoint_path', None))
+    
+    if checkpoint_path:
+        print(f"Resuming training from checkpoint: {checkpoint_path}")
+        trainer.load_checkpoint(
+            checkpoint_path,
+            strict=resume_config.get('strict', True),
+            reset_optimizer=resume_config.get('reset_optimizer', False),
+            reset_lr_scheduler=resume_config.get('reset_lr_scheduler', False),
+            reset_epoch=resume_config.get('reset_epoch', False)
+        )
     
     # Start training
     epochs = config.get('training', {}).get('epochs', 100)

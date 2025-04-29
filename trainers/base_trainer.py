@@ -5,9 +5,9 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 from typing import Dict, List, Optional, Union, Any, Callable
-
 from utils.distributed import is_main_process, reduce_tensor
 
 
@@ -91,6 +91,20 @@ class BaseTrainer:
         # Initialize best metrics for model saving
         self.best_val_metric = float('inf')
         self.best_epoch = 0
+        
+        # Visualization settings
+        vis_config = self.config.get('visualization', {})
+        self.vis_enabled = vis_config.get('enabled', True)
+        self.vis_interval = vis_config.get('interval', 100)  # Every N batches
+        self.vis_samples = vis_config.get('num_samples', 8)
+        self.class_names = vis_config.get('class_names', None)
+        
+        # Import visualizer if visualization is enabled
+        if self.vis_enabled and is_main_process() and self.writer is not None:
+            from visualization.tensorboard import TensorboardVisualizer
+            self.visualizer = TensorboardVisualizer(self.writer)
+        else:
+            self.visualizer = None
     
     def setup_optimizer(self):
         """
@@ -140,34 +154,56 @@ class BaseTrainer:
         
         start_time = time.time()
         
-        for batch_idx, batch in enumerate(self.train_loader):
-            # Move data to device
-            batch = self._prepare_batch(batch)
-            
-            # Forward pass
-            self.optimizer.zero_grad()
-            outputs = self.model(batch)
-            
-            # Compute loss
-            loss_dict = self._compute_loss(outputs, batch)
-            loss = loss_dict['loss']
-            
-            # Backward pass
-            loss.backward()
-            self.optimizer.step()
-            
-            # Update metrics
-            if self.distributed:
-                loss = reduce_tensor(loss)
-            
-            total_loss += loss.item() * batch['target'].size(0)
-            total_samples += batch['target'].size(0)
-            
-            # Log batch stats for large datasets
-            if batch_idx % self.config.get('log_interval', 10) == 0:
-                self._log_batch_stats(epoch, batch_idx, loss_dict)
+        try:
+            for batch_idx, batch in enumerate(self.train_loader):
+                # Move data to device
+                batch = self._prepare_batch(batch)
+                
+                # Forward pass
+                self.optimizer.zero_grad()
+                outputs = self.model(batch)
+                
+                # Compute loss
+                loss_dict = self._compute_loss(outputs, batch)
+                loss = loss_dict['loss']
+                
+                # Backward pass
+                loss.backward()
+                self.optimizer.step()
+                
+                # Update metrics
+                if self.distributed:
+                    loss = reduce_tensor(loss)
+                
+                total_loss += loss.item() * batch['target'].size(0)
+                total_samples += batch['target'].size(0)
+                
+                # Log batch stats for large datasets
+                if batch_idx % self.config.get('log_interval', 10) == 0:
+                    self._log_batch_stats(epoch, batch_idx, loss_dict)
+                
+                # Visualize current batch samples
+                if self.vis_enabled and is_main_process() and self.visualizer is not None:
+                    if batch_idx % self.vis_interval == 0:
+                        self._visualize_batch(batch, outputs, f"train_epoch_{epoch}_batch_{batch_idx}", max_samples=self.vis_samples)
+        except RuntimeError as e:
+            if "DataLoader worker" in str(e):
+                print(f"WARNING: DataLoader worker error occurred: {e}")
+                # Recreate the DataLoader if possible
+                if hasattr(self, '_recreate_data_loader'):
+                    print("Attempting to recreate DataLoader...")
+                    self._recreate_data_loader('train_loader')
+                # If we haven't processed any batches, this is a critical error
+                if total_samples == 0:
+                    raise
+            else:
+                raise
         
         # Calculate epoch metrics
+        if total_samples == 0:
+            print("WARNING: No samples processed in this epoch!")
+            return {'train_loss': float('inf'), 'train_time': time.time() - start_time}
+            
         metrics = {
             'train_loss': total_loss / total_samples,
             'train_time': time.time() - start_time
@@ -227,6 +263,11 @@ class BaseTrainer:
                 
                 all_preds.append(preds.detach().cpu())
                 all_targets.append(targets.detach().cpu())
+                
+                # Visualize validation samples
+                if self.vis_enabled and is_main_process() and self.visualizer is not None:
+                    if batch_idx % self.vis_interval == 0:
+                        self._visualize_batch(batch, outputs, f"val_epoch_{epoch}_batch_{batch_idx}", max_samples=self.vis_samples)
         
         # Calculate metrics
         all_preds = torch.cat(all_preds, dim=0)
@@ -261,7 +302,10 @@ class BaseTrainer:
         for epoch in range(1, num_epochs + 1):
             # Set epoch for distributed samplers
             if self.distributed:
-                self.train_loader.sampler.set_epoch(epoch)
+                # Check if sampler has set_epoch method before calling it
+                if hasattr(self.train_loader.sampler, 'set_epoch'):
+                    self.train_loader.sampler.set_epoch(epoch)
+
             
             # Train for one epoch
             train_metrics = self.train_epoch(epoch)
@@ -455,18 +499,168 @@ class BaseTrainer:
             
             print(f"Saved checkpoint at epoch {epoch}")
     
-    def load_checkpoint(self, checkpoint_path: str):
+    def load_checkpoint(self, checkpoint_path: str, strict: bool = True, 
+                    reset_optimizer: bool = False, reset_lr_scheduler: bool = False,
+                    reset_epoch: bool = False):
         """
         Load model from checkpoint.
         
         Args:
             checkpoint_path: Path to checkpoint file
+            strict: Whether to strictly enforce that the keys match between state_dict and model
+            reset_optimizer: Whether to reset the optimizer state
+            reset_lr_scheduler: Whether to reset the learning rate scheduler
+            reset_epoch: Whether to reset the epoch counter (start from 0)
+        
+        Returns:
+            Checkpoint data
         """
+        print(f"Loading checkpoint from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
         model_to_load = self.model.module if self.distributed else self.model
-        model_to_load.load_state_dict(checkpoint['model_state_dict'])
         
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        try:
+            model_to_load.load_state_dict(checkpoint['model_state_dict'], strict=strict)
+            print("Model weights loaded successfully")
+        except Exception as e:
+            print(f"Warning: Error loading model weights: {e}")
+            if strict:
+                raise
+            
+        # Load optimizer state unless reset is requested
+        if 'optimizer_state_dict' in checkpoint and not reset_optimizer:
+            try:
+                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                print("Optimizer state loaded successfully")
+            except Exception as e:
+                print(f"Warning: Could not load optimizer state: {e}")
+        else:
+            print("Optimizer state reset (using current state)")
+            
+        # Load scheduler state if it exists and reset is not requested
+        if hasattr(self, 'scheduler') and self.scheduler is not None:
+            if 'scheduler_state_dict' in checkpoint and not reset_lr_scheduler:
+                try:
+                    self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                    print("Learning rate scheduler state loaded successfully")
+                except Exception as e:
+                    print(f"Warning: Could not load scheduler state: {e}")
+            else:
+                print("Learning rate scheduler state reset (using current state)")
         
+        # Load epoch and metrics if they exist and reset is not requested
+        if 'epoch' in checkpoint and not reset_epoch:
+            self.best_epoch = checkpoint.get('best_epoch', checkpoint['epoch'])
+            print(f"Resuming from epoch {checkpoint['epoch']} (best epoch: {self.best_epoch})")
+        else:
+            print("Epoch counter reset to 0")
+            
+        if 'metrics' in checkpoint and not reset_epoch:
+            self.best_val_metric = checkpoint.get('best_val_metric', float('inf'))
+            print(f"Best validation metric loaded: {self.best_val_metric:.6f}")
+        
+        print(f"Checkpoint loaded successfully from {checkpoint_path}")
         return checkpoint
+    
+    def _recreate_data_loader(self, loader_name: str):
+        """
+        Recreate a DataLoader that had worker failures.
+        
+        Args:
+            loader_name: Name of the loader attribute to recreate ('train_loader' or 'val_loader')
+        """
+        if not hasattr(self, loader_name):
+            print(f"No {loader_name} attribute found to recreate")
+            return
+            
+        old_loader = getattr(self, loader_name)
+        
+        # Get the dataset and key parameters from the old loader
+        dataset = old_loader.dataset
+        batch_size = old_loader.batch_size
+        
+        # Use fewer workers and disable persistent workers to improve stability
+        num_workers = max(0, getattr(old_loader, 'num_workers', 2) - 1)
+        
+        print(f"Recreating {loader_name} with {num_workers} workers (reduced) and persistent_workers=False")
+        
+        # Recreate the DataLoader with more conservative settings
+        new_loader = DataLoader(
+            dataset=dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            shuffle=not isinstance(old_loader.sampler, torch.utils.data.DistributedSampler),
+            sampler=old_loader.sampler,
+            collate_fn=old_loader.collate_fn,
+            pin_memory=getattr(old_loader, 'pin_memory', False),
+            drop_last=getattr(old_loader, 'drop_last', False),
+            persistent_workers=False  # Disable persistent workers
+        )
+        
+        # Update the loader
+        setattr(self, loader_name, new_loader)
+    
+    def _visualize_batch(self, batch: Dict[str, Any], outputs: Dict[str, torch.Tensor], tag: str, max_samples: int = 1):
+        """
+        Visualize a batch of data with predictions.
+        
+        Args:
+            batch: Batch of data
+            outputs: Model outputs
+            tag: Tag for the visualization
+            max_samples: Maximum number of samples to visualize (default: 1)
+        """
+        if not self.vis_enabled or self.visualizer is None:
+            return
+            
+        # Get predictions
+        preds = self._get_predictions(outputs)
+        
+        # Extract images and targets
+        images = batch.get('image', None)
+        targets = batch.get('target', None)
+        
+        # If we don't have images, we can't visualize
+        if images is None:
+            return
+            
+        # Hard-code max_samples to 1 to ensure we only show one image per batch
+        max_samples = 1
+            
+        # Handle multimodal data - extract additional metadata if available
+        metadata_list = None
+        if 'text' in batch:
+            # For hateful memes or similar multimodal datasets with text
+            texts = batch.get('text', [])
+            metadata_list = []
+            for i, text in enumerate(texts):
+                if i >= max_samples:
+                    break
+                metadata_list.append({'text': text})
+        
+        # Get class names if not provided
+        class_names = self.class_names
+        if class_names is None:
+            # Try to infer class names from config
+            model_cfg = self.config.get('model', {})
+            if 'num_classes' in model_cfg:
+                num_classes = model_cfg.get('num_classes')
+                # Generate generic class names
+                class_names = [f"Class {i}" for i in range(num_classes)]
+                
+                # Special case for binary classification like hateful memes
+                if num_classes == 2:
+                    class_names = ["Not Hateful", "Hateful"]
+        
+        # Visualize the batch (only one sample)
+        self.visualizer.add_batch_with_predictions(
+            tag=tag,
+            images=images[:max_samples],
+            ground_truths=targets[:max_samples] if targets is not None else None,
+            predictions=preds[:max_samples],
+            class_names=class_names,
+            global_step=0,  # No global step needed for these visualizations
+            max_samples=max_samples,
+            metadata=metadata_list
+        )

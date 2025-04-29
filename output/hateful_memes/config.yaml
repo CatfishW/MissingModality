@@ -1,5 +1,8 @@
 data:
-  data_path: /path/to/hateful_memes
+  cache_dir: null
+  data_path: ./hateful_memes
+  dataset_name: neuralcatcher/hateful_memes
+  dataset_source: huggingface
   missing_modalities:
     enabled: true
     test_missing:
@@ -10,14 +13,14 @@ data:
   - image
   - text
   test_data:
-    batch_size: 32
-    num_workers: 4
+    batch_size: 16
+    num_workers: 2
   train_data:
-    batch_size: 32
-    num_workers: 4
+    batch_size: 16
+    num_workers: 2
   val_data:
-    batch_size: 32
-    num_workers: 4
+    batch_size: 16
+    num_workers: 2
 distributed:
   backend: nccl
   enabled: false
@@ -45,6 +48,13 @@ model:
   type: hateful_memes
 name: hateful_memes_classification
 output_dir: ./output/hateful_memes
+resume:
+  checkpoint_path: ./output/hateful_memes/best_model.pth
+  enabled: true
+  reset_epoch: false
+  reset_lr_scheduler: false
+  reset_optimizer: false
+  strict: true
 seed: 42
 tensorboard:
   enabled: true

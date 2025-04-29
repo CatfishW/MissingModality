@@ -116,14 +116,15 @@ class HatefulMemesClassifier(MissingModalityModel):
         if strategy == "learned":
             self.image_default = nn.Parameter(torch.randn(1, fusion_dim) * 0.02)
             self.text_default = nn.Parameter(torch.randn(1, fusion_dim) * 0.02)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
     
-    def extract_features(self, modality: str, inputs: torch.Tensor) -> torch.Tensor:
+    def extract_features(self, modality: str, inputs: Any) -> torch.Tensor: # Changed type hint for inputs
         """
         Extract features from a single modality.
         
         Args:
             modality: Name of the modality ('image' or 'text')
-            inputs: Input tensor for the modality
+            inputs: Input tensor or list/dict for the modality
         
         Returns:
             Features extracted from the modality
@@ -135,17 +136,34 @@ class HatefulMemesClassifier(MissingModalityModel):
             return self.image_projection(features)
         
         elif modality == "text":
-            # Process text through transformer
-            if isinstance(inputs, dict):
-                # Handle direct tokenizer output
-                outputs = self.text_backbone(**inputs)
+            # Process text through backbone
+            # Convert list of dicts to batched tensors
+            if isinstance(inputs, list):
+                # Extract tensors from list of dictionaries
+                input_ids = torch.stack([item["input_ids"] for item in inputs]).to(self.device)
+                attention_mask = torch.stack([item["attention_mask"] for item in inputs]).to(self.device)
+                
+                # token_type_ids might not be present for RoBERTa models
+                token_type_ids = None
+                if "token_type_ids" in inputs[0]:
+                    token_type_ids = torch.stack([item["token_type_ids"] for item in inputs]).to(self.device)
             else:
-                # Handle text tensor
-                outputs = self.text_backbone(inputs)
+                # Handle case where inputs might already be batched
+                input_ids = inputs.get("input_ids")
+                token_type_ids = inputs.get("token_type_ids")
+                attention_mask = inputs.get("attention_mask")
+            # Pass inputs to the text backbone
+            text_outputs = self.text_backbone(
+                input_ids=input_ids,
+                token_type_ids=token_type_ids,
+                attention_mask=attention_mask
+            )
             
-            # Use CLS token as text representation
-            features = outputs.last_hidden_state[:, 0]
-            return self.text_projection(features)
+            # Get the pooled output (CLS token representation)
+            pooled_output = text_outputs.pooler_output
+            
+            # Project to fusion dimension
+            return self.text_projection(pooled_output)
         
         else:
             raise ValueError(f"Unsupported modality: {modality}")

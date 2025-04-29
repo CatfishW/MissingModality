@@ -13,8 +13,8 @@ def create_dataloader(
     drop_last: bool = False,
     distributed: bool = False,
     collate_fn: Optional[Callable] = None,
-    pin_memory: bool = True,
-    persistent_workers: bool = True,
+    pin_memory: bool = False,
+    persistent_workers: bool = False,
     **kwargs
 ) -> DataLoader:
     """
@@ -38,27 +38,62 @@ def create_dataloader(
     if distributed and torch.distributed.is_initialized():
         sampler = DistributedSampler(dataset, shuffle=shuffle)
         shuffle = False  # Shuffle is handled by sampler
+        print(f"Using DistributedSampler with {torch.distributed.get_world_size()} processes.")
     else:
         sampler = None
+        print("Using default sampler.")
     
-    # Handle multiprocessing for Windows
-    if num_workers > 0 and persistent_workers and torch.get_num_threads() > 1:
+    # Handle multiprocessing settings for better stability, especially on Windows
+    if torch.get_num_threads() <= 1:
+        # If system is running with few CPU threads, disable multiprocessing
+        num_workers = 0
+        persistent_workers = False
+    
+    # On Windows, sometimes persistent_workers can cause issues
+    if num_workers == 0:
+        persistent_workers = False
+    elif persistent_workers and num_workers > 0 and (torch.get_num_threads() > 1):
+        # Only use persistent workers when we have sufficient resources
         persistent_workers = True
     else:
         persistent_workers = False
     
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        shuffle=shuffle if sampler is None else False,
-        sampler=sampler,
-        drop_last=drop_last,
-        collate_fn=collate_fn,
-        pin_memory=pin_memory,
-        persistent_workers=persistent_workers,
-        **kwargs
-    )
+    # Use a more conservative approach for Windows
+    import platform
+    if platform.system() == 'Windows':
+        # Windows has more issues with worker processes
+        num_workers = min(num_workers, 2)  # Limit workers on Windows
+        persistent_workers = False  # Disable persistent workers on Windows
+    
+    try:
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            shuffle=shuffle if sampler is None else False,
+            sampler=sampler,
+            drop_last=drop_last,
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            **kwargs
+        )
+    except Exception as e:
+        print(f"Error creating DataLoader: {e}")
+        print("Falling back to safer DataLoader configuration...")
+        # Fall back to a safer configuration
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=0,  # Disable multiprocessing
+            shuffle=shuffle if sampler is None else False,
+            sampler=sampler,
+            drop_last=drop_last,
+            collate_fn=collate_fn,
+            pin_memory=False,  # Disable pin memory
+            persistent_workers=False,  # Disable persistent workers
+            **kwargs
+        )
 
 
 def default_collate_fn(batch: list) -> Dict[str, Any]:

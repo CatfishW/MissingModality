@@ -3,6 +3,34 @@ import torchvision.transforms as T
 from typing import List, Union, Dict, Any
 from transformers import BertTokenizer, RobertaTokenizer
 
+class TextTransform:
+    """A class-based text transform that can be pickled."""
+    
+    def __init__(self, tokenizer, max_length):
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    def __call__(self, text: str) -> Dict[str, torch.Tensor]:
+        encoded = self.tokenizer(
+            text,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt"
+        )
+        
+        # Ensure all values are tensors (not lists) and squeeze to remove batch dimension
+        result = {}
+        for k, v in encoded.items():
+            if isinstance(v, list):
+                result[k] = torch.tensor(v, device=self.device)
+            else:
+                # Already a tensor, just squeeze the batch dimension
+                result[k] = v.squeeze(0)
+        
+        return result
+
 class HatefulMemesTransforms:
     """
     Transformations for the Hateful Memes dataset.
@@ -62,16 +90,4 @@ class HatefulMemesTransforms:
         else:
             tokenizer = BertTokenizer.from_pretrained(model_name)
         
-        def transform_text(text: str) -> Dict[str, torch.Tensor]:
-            encoded = tokenizer(
-                text,
-                padding="max_length",
-                truncation=True,
-                max_length=max_length,
-                return_tensors="pt"
-            )
-            
-            # Convert to regular tensors without batch dimension
-            return {k: v.squeeze(0) for k, v in encoded.items()}
-        
-        return transform_text
+        return TextTransform(tokenizer, max_length)
